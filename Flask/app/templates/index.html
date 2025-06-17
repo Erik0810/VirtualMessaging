@@ -46,7 +46,14 @@
         function sendMessage() {
             const message = messageInput.value.trim();
             if (message) {
-                socket.emit('raw_send', { message: message });
+                // Use raw_send endpoint instead of Socket.IO
+                fetch(`/raw_send/${encodeURIComponent(message)}`)
+                    .then(response => response.text())
+                    .then(result => {
+                        console.log(result);
+                        lastMessageDiv.textContent = message;
+                    })
+                    .catch(error => console.error('Error:', error));
                 messageInput.value = '';
             }
         }
