@@ -5,22 +5,15 @@
 #include <ArduinoJson.h>
 #include "config.h"
 
-// WebSocket path for Socket.IO with namespace (version 4)
-const char* websocket_path = "/socket.io/?EIO=4&transport=websocket";
-
-// Debug flag
-#define DEBUG_WEBSOCKET true
-
-// LCD setup (address and size needs to be adjusted if you are using a different LCD)
-LiquidCrystal_I2C lcd(0x27, 16, 2);  // (address, columns, rows)
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 WebSocketsClient webSocket;
 
 void setup() {
-  // Init Serial for debugging
   Serial.begin(115200);
+  Serial.println("ESP32 Socket.IO Client Starting");
   
-  // Init LCD
-  Wire.begin(21, 22);  // SDA = 21, SCL = 22
+  // Initialize LCD
+  Wire.begin(21, 22);
   lcd.begin(16, 2);
   lcd.backlight();
   lcd.clear();
@@ -32,23 +25,15 @@ void setup() {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nConnected to WiFi");
+  Serial.println("\nWiFi Connected");
   
-  // Display IP on LCD
-  lcd.clear();
-  lcd.print("WiFi Connected");
-  lcd.setCursor(0, 1);
-  lcd.print(WiFi.localIP());
-  delay(2000);
-  
-  // Configure WebSocket with ping interval
-  Serial.print("Connecting to server: ");
-  Serial.println(websocket_server);
-  webSocket.setReconnectInterval(5000);
-  webSocket.enableHeartbeat(25000, 20000, 2);
-  webSocket.begin(websocket_server, websocket_port, websocket_path);
+  // Connect to WebSocket
+  webSocket.begin(websocket_server, websocket_port, "/socket.io/?EIO=4&transport=websocket");
   webSocket.onEvent(webSocketEvent);
   webSocket.setReconnectInterval(5000);
+  
+  lcd.clear();
+  lcd.print("Ready");
 }
 
 void loop() {
@@ -56,114 +41,65 @@ void loop() {
 }
 
 void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
+  String message = String((char*)payload);
+  
   switch(type) {
     case WStype_DISCONNECTED:
-      Serial.println("Disconnected from WebSocket server");
+      Serial.println("Disconnected");
       lcd.clear();
       lcd.print("Disconnected");
       break;
       
     case WStype_CONNECTED:
-      Serial.println("Connected to WebSocket server");
+      Serial.println("Connected to server");
       lcd.clear();
       lcd.print("Connected");
+      // Send Socket.IO connection message
+      webSocket.sendTXT("40");
       break;
       
-    case WStype_TEXT: {
-      String rawMessage = String((char*)payload);
-      Serial.println("\n--- New Message ---");
-      Serial.print("Raw message length: ");
-      Serial.println(length);
-      Serial.print("Raw message: ");
-      Serial.println(rawMessage);
+    case WStype_TEXT:
+      Serial.print("Received: ");
+      Serial.println(message);
       
-      // Print first few bytes for debugging
-      Serial.print("First bytes: ");
-      for(size_t i = 0; i < min(length, (size_t)10); i++) {
-        Serial.print((char)payload[i]);
-      }
-      Serial.println();
-      
-      if (rawMessage.startsWith("0")) {
-        Serial.println("Type: Socket.IO handshake");
-      }
-      else if (rawMessage.startsWith("2")) {
-        Serial.println("Type: Socket.IO ping/pong");
-        // Send pong response
+      // Handle Socket.IO messages
+      if (message.startsWith("2")) {
+        // Engine.IO ping - respond with pong
         webSocket.sendTXT("3");
       }
-      else if (rawMessage.startsWith("42")) {
-        Serial.println("Type: Socket.IO event message");
-        String messageContent = rawMessage.substring(2);
-        Serial.print("Message content: ");
-        Serial.println(messageContent);
+      else if (message.startsWith("40")) {
+        // Socket.IO connection confirmed
+        Serial.println("Socket.IO connected");
+      }
+      else if (message.startsWith("42")) {
+        // Event message - parse it
+        String jsonData = message.substring(2);
+        Serial.print("JSON Data: ");
+        Serial.println(jsonData);
         
-        StaticJsonDocument<200> doc;
-        DeserializationError error = deserializeJson(doc, messageContent);
-        
-        if (!error) {
-          const char* eventName = doc[0];
-          Serial.print("Event name: ");
-          Serial.println(eventName);
-          
-          if (strcmp(eventName, "display_message") == 0) {
-            Serial.println("Found display_message event");
-            Serial.println("Parsing message object...");
-            JsonVariant messageObj = doc[1];
-            if (messageObj.containsKey("message")) {
-              const char* displayText = messageObj["message"];
-              Serial.print("Message to display: ");
+        DynamicJsonDocument doc(512);
+        if (deserializeJson(doc, jsonData) == DeserializationError::Ok) {
+          if (doc.is<JsonArray>() && doc.size() >= 2) {
+            String eventName = doc[0];
+            if (eventName == "display_message") {
+              String displayText = doc[1]["message"];
+              Serial.print("Display: ");
               Serial.println(displayText);
-              updateDisplay(displayText);
-            } else {
-              Serial.println("No message field found in event data");
+              
+              // Update LCD
+              lcd.clear();
+              if (displayText.length() > 16) {
+                lcd.setCursor(0, 0);
+                lcd.print(displayText.substring(0, 16));
+                lcd.setCursor(0, 1);
+                lcd.print(displayText.substring(16, 32));
+              } else {
+                lcd.print(displayText);
+              }
             }
           }
-        } else {
-          Serial.print("JSON parsing failed: ");
-          Serial.println(error.c_str());
         }
       }
-      else {
-        Serial.println("Type: Unknown message format");
-      }
-      Serial.println("------------------");
       break;
-    }
   }
-}
-
-void updateDisplay(const char* text) {
-  if (!text) {
-    Serial.println("Error: Null message received");
-    return;
-  }
-  
-  Serial.println("Updating LCD display:");
-  Serial.print("Message: ");
-  Serial.println(text);
-  
-  lcd.clear();
-  if (strlen(text) > 16) {
-    // First line
-    String firstLine = String(text).substring(0, 16);
-    Serial.print("Line 1: ");
-    Serial.println(firstLine);
-    lcd.setCursor(0, 0);
-    lcd.print(firstLine);
-    
-    // Second line if message is longer
-    if (strlen(text) > 16) {
-      String secondLine = String(text).substring(16, 32);
-      Serial.print("Line 2: ");
-      Serial.println(secondLine);
-      lcd.setCursor(0, 1);
-      lcd.print(secondLine);
-    }
-  } else {
-    Serial.println("Single line message");
-    lcd.print(text);
-  }
-  
-  Serial.println("Display update complete");
 }
